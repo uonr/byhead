@@ -43,6 +43,15 @@ fn udp_to_pose(port: u16) -> std::io::Result<()> {
     }
 }
 
+fn niri_right() -> std::io::Result<()> {
+    use niri_ipc::{Request,Action};
+    let socket = niri_ipc::socket::Socket::connect()?;
+    let (reply, _) = socket.send(Request::Action(Action::FocusColumnRight {  }))?;
+    println!("{:?}", reply);
+    Ok(())
+}
+
 fn main() -> std::io::Result<()> {
+    niri_right()?;
     udp_to_pose(4242)
 }
