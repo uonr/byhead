@@ -79,20 +79,12 @@ impl Pose {
         (*self - other) / delta
     }
 
-    fn yaw_arrow(&self) -> char {
-        if self.yaw < 0.0 {
-            '←'
-        } else {
-            '→'
-        }
+    fn yaw_arrow(&self) -> &'static str {
+        if self.yaw < 0.0 { "←" } else { "→" }
     }
 
-    fn pitch_arrow(&self) -> char {
-        if self.pitch > 0.0 {
-            '↑'
-        } else {
-            '↓'
-        }
+    fn pitch_arrow(&self) -> &'static str {
+        if self.pitch > 0.0 { "↑" } else { "↓" }
     }
 }
 
@@ -253,9 +245,10 @@ fn run(port: u16) -> std::io::Result<()> {
                 continue;
             }
             let yaw_threshold = 36.0;
-            let pitch_threshold = 40.0;
+            let pitch_up_threshold = 30.0;
+            let pitch_down_threshold = -50.0;
             let idle_time = 500;
-            let accel_threshold = 1000.0;
+            let accel_threshold = 900.0;
             let log_all = true;
 
             let from_idle = history
@@ -267,7 +260,9 @@ fn run(port: u16) -> std::io::Result<()> {
                     let v_pitch = x.v.pitch;
                     let same_direction = x.v.yaw.signum() == record.v.yaw.signum()
                         && v_pitch.signum() == record.v.pitch.signum();
-                    (v_yaw.abs() < yaw_threshold && v_pitch.abs() < pitch_threshold)
+                    (v_yaw.abs() < yaw_threshold
+                        && v_pitch < pitch_up_threshold
+                        && v_pitch > pitch_down_threshold)
                         || same_direction
                 });
 
@@ -300,21 +295,25 @@ fn run(port: u16) -> std::io::Result<()> {
                         })
                         .unwrap();
                 }
-            } else if record.v.pitch.abs() > pitch_threshold && acc.pitch.abs() > accel_threshold {
+            } else if record.v.pitch > pitch_up_threshold && acc.pitch.abs() > accel_threshold {
                 if !from_idle {
-                    println!("[PITCH] NOT IDLE");
+                    println!("[PITCH UP] NOT IDLE");
                 } else {
                     println!(
                         "{} {from_idle}",
-                        record.v.pitch_arrow().to_string().repeat(8),
+                        record.v.pitch_arrow().repeat(8),
                     );
-                    sig_tx
-                        .send(if record.v.pitch < 0.0 {
-                            Signal::Down
-                        } else {
-                            Signal::Up
-                        })
-                        .unwrap();
+                    sig_tx.send(Signal::Up).unwrap();
+                }
+            } else if record.v.pitch < pitch_down_threshold && acc.pitch.abs() > accel_threshold * 2.0 {
+                if !from_idle {
+                    println!("[PITCH DOWN] NOT IDLE");
+                } else {
+                    println!(
+                        "{} {from_idle}",
+                        record.v.pitch_arrow().repeat(8),
+                    );
+                    sig_tx.send(Signal::Down).unwrap();
                 }
             }
         }
