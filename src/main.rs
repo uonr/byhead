@@ -12,11 +12,103 @@ struct Pose {
     roll: f64,
 }
 
+impl std::ops::Add<Pose> for Pose {
+    type Output = Pose;
+    fn add(self, other: Pose) -> Pose {
+        Pose {
+            x: self.x + other.x,
+            y: self.y + other.y,
+            z: self.z + other.z,
+            yaw: self.yaw + other.yaw,
+            pitch: self.pitch + other.pitch,
+            roll: self.roll + other.roll,
+        }
+    }
+}
+
+impl std::ops::Sub<Pose> for Pose {
+    type Output = Pose;
+    fn sub(self, other: Pose) -> Pose {
+        Pose {
+            x: self.x - other.x,
+            y: self.y - other.y,
+            z: self.z - other.z,
+            yaw: self.yaw - other.yaw,
+            pitch: self.pitch - other.pitch,
+            roll: self.roll - other.roll,
+        }
+    }
+}
+
+impl std::ops::Mul<f64> for Pose {
+    type Output = Pose;
+    fn mul(self, other: f64) -> Pose {
+        Pose {
+            x: self.x * other,
+            y: self.y * other,
+            z: self.z * other,
+            yaw: self.yaw * other,
+            pitch: self.pitch * other,
+            roll: self.roll * other,
+        }
+    }
+}
+
+impl std::ops::Div<f64> for Pose {
+    type Output = Pose;
+    fn div(self, other: f64) -> Pose {
+        Pose {
+            x: self.x / other,
+            y: self.y / other,
+            z: self.z / other,
+            yaw: self.yaw / other,
+            pitch: self.pitch / other,
+            roll: self.roll / other,
+        }
+    }
+}
+
+impl Pose {
+    fn displey(&self) -> String {
+        format!(
+            "x={:8.2} y={:8.2} z={:8.2} yaw={:8.2} pitch={:8.2} roll={:8.2}",
+            self.x, self.y, self.z, self.yaw, self.pitch, self.roll
+        )
+    }
+    fn v(&self, other: Pose, delta: f64) -> Pose {
+        (other - *self) / delta
+    }
+
+    fn yaw_arrow(&self) -> char {
+        if self.yaw > 0.0 {
+            '←'
+        } else {
+            '→'
+        }
+    }
+
+    fn pitch_arrow(&self) -> char {
+        if self.pitch < 0.0 {
+            '↑'
+        } else {
+            '↓'
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct PoseRecord {
     pose: Pose,
+    v: Pose,
     instant: std::time::Instant,
     delta: f64,
+}
+
+impl PoseRecord {
+    fn v(&self, other: PoseRecord) -> Pose {
+        let delta = self.instant.duration_since(other.instant).as_secs_f64();
+        self.pose.v(other.pose, delta)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,8 +123,14 @@ enum Signal {
 }
 
 enum State {
-    LeftYawing { start: Instant, end: Option<Instant> },
-    RightYawing { start: Instant, end: Option<Instant> },
+    LeftYawing {
+        start: Instant,
+        end: Option<Instant>,
+    },
+    RightYawing {
+        start: Instant,
+        end: Option<Instant>,
+    },
     Idle,
 }
 
@@ -50,7 +148,7 @@ fn run(port: u16) -> std::io::Result<()> {
             let signal = sig_rx.recv().unwrap();
             let now = std::time::Instant::now();
             let delta = now.duration_since(prev_instant).as_secs_f64();
-            if delta < 0.35 {
+            if delta < 0.20 {
                 prev_instant = now;
                 continue;
             }
@@ -98,11 +196,12 @@ fn run(port: u16) -> std::io::Result<()> {
     });
 
     std::thread::spawn(move || {
-        let mut state = State::Idle;
-        let mut history = std::collections::VecDeque::<PoseRecord>::with_capacity(1000);
+        let mut history = std::collections::VecDeque::<PoseRecord>::with_capacity(4096);
+        let mut last_signal = Signal::Nop;
         loop {
+            history.truncate(4000);
             let now = std::time::Instant::now();
-            let [x, y, z, yaw, pitch, roll] = raw_rx.recv().unwrap();
+            let [x, y, z, yaw, pitch, roll] = raw_rx.recv().expect("Failed to receive raw data");
             let pose = Pose {
                 x,
                 y,
@@ -113,90 +212,79 @@ fn run(port: u16) -> std::io::Result<()> {
             };
 
             let elapsed = now.duration_since(start).as_secs_f64();
-            let Some(&prev_record) = history.back() else {
-                history.push_back(PoseRecord {
+            let Some(&prev) = history.front() else {
+                history.push_front(PoseRecord {
                     pose,
+                    v: Pose::default(),
                     instant: now,
                     delta: 0.0,
                 });
                 continue;
             };
-            let prev: Pose = prev_record.pose;
-            let prev_instant = prev_record.instant;
-            let delta = now.duration_since(prev_instant).as_secs_f64();
-            let record = PoseRecord {
-                pose,
-                instant: now,
-                delta,
-            };
-            history.push_back(record);
-            if history.len() < 16 {
-                continue;
-            }
-            let Some(&prev_2_record) = history.get(history.len() - 3) else {
-                continue;
-            };
-            let Some(&prev_3_record) = history.get(history.len() - 4) else {
-                continue;
-            };
-            let prev_2 = prev_2_record.pose;
-            let prev_3 = prev_3_record.pose;
+            let delta = now.duration_since(prev.instant).as_secs_f64();
 
+            let record = if let Some(prev_2) = history.get(2) {
+                let v = pose.v(
+                    prev_2.pose,
+                    now.duration_since(prev_2.instant).as_secs_f64(),
+                );
+                PoseRecord {
+                    pose,
+                    v,
+                    instant: now,
+                    delta,
+                }
+            } else {
+                let v = pose.v(prev.pose, delta);
+                PoseRecord {
+                    pose,
+                    v,
+                    instant: now,
+                    delta,
+                }
+            };
+            history.push_front(record);
             if delta > 1.0 {
                 println!("Delta too large: {}", delta);
-                history.clear();
+                history.truncate(1);
                 continue;
             }
-            let d_t = now.duration_since(prev_2_record.instant).as_secs_f64();
-            let v_x = (pose.x - prev_2.x) / d_t;
-            let v_y = (pose.y - prev_2.y) / d_t;
-            let v_z = (pose.z - prev_2.z) / d_t;
-            let v_yaw = (pose.yaw - prev_2.yaw) / d_t;
-            let v_pitch = (pose.pitch - prev_2.pitch) / d_t;
-            let v_roll = (pose.roll - prev_2.roll) / d_t;
-            let v = (v_x.powi(2) + v_y.powi(2) + v_z.powi(2)).sqrt();
-            let v_rot = (v_yaw.powi(2) + v_pitch.powi(2) + v_roll.powi(2)).sqrt();
-
-            let prev_d_t = prev_record
-                .instant
-                .duration_since(prev_3_record.instant)
-                .as_secs_f64();
-            let prev_v_x = (prev.x - prev_3.x) / prev_d_t;
-            let prev_v_y = (prev.y - prev_3.y) / prev_d_t;
-            let prev_v_z = (prev.z - prev_3.z) / prev_d_t;
-            let prev_v_yaw = (prev.yaw - prev_3.yaw) / prev_d_t;
-            let prev_v_pitch = (prev.pitch - prev_3.pitch) / prev_d_t;
-            let prev_v_roll = (prev.roll - prev_3.roll) / prev_d_t;
-            let prev_v = (prev_v_x.powi(2) + prev_v_y.powi(2) + prev_v_z.powi(2)).sqrt();
-            let prev_v_rot =
-                (prev_v_yaw.powi(2) + prev_v_pitch.powi(2) + prev_v_roll.powi(2)).sqrt();
-
-            let accel_v = (v - prev_v) / d_t;
-            let accel_v_rot = (v_rot - prev_v_rot) / d_t;
-
-            if v_yaw.abs() > 60.0 {
-                let right = v_yaw > 0.0;
-                let arrow = if right { "→" } else { "←" };
-
-                if right {
-                    sig_tx.send(Signal::RightColumn).unwrap();
-                } else {
-                    sig_tx.send(Signal::LeftColumn).unwrap();
-                }
-
-                println!("[{:10.4}] {} v_yaw: {:6.2}", elapsed, arrow, v_yaw);
-            } else if v_pitch > 45.0 || v_pitch < -72.0 {
-                let up = v_pitch > 0.0;
-                let arrow = if up { "↑" } else { "↓" };
-
-                if up {
-                    sig_tx.send(Signal::Up).unwrap();
-                } else {
-                    sig_tx.send(Signal::Down).unwrap();
-                }
-
-                println!("[{:10.4}] {} v_pitch: {:6.2}", elapsed, arrow, v_pitch);
+            let history_len = history.len();
+            if history_len < 16 {
+                continue;
             }
+            let yaw_threshold = 36.0;
+            let pitch_threshold = 40.0;
+            let idle_time = 500;
+
+            let from_idle = history
+                .iter()
+                .skip(1)
+                .take_while(|x| now.duration_since(x.instant).as_millis() < idle_time)
+                .all(|x| {
+                    let v_yaw = x.v.yaw;
+                    v_yaw.abs() < yaw_threshold || v_yaw.signum() == record.v.yaw.signum()
+                });
+
+
+            if (record.v.pitch > 50.0 || record.v.pitch < -32.0) && from_idle  {
+                println!(
+                    "[{:10.3}] {} {}",
+                    elapsed,
+                    record.v.pitch_arrow(),
+                    record.v.pitch,
+                );
+                sig_tx.send(if record.v.pitch > 0.0 { Signal::Down } else { Signal::Up }).unwrap();
+            } else if record.v.yaw.abs() >= yaw_threshold && from_idle {
+                println!(
+                    "[{:10.3}] {} {}",
+                    elapsed,
+                    record.v.yaw_arrow(),
+                    record.v.yaw,
+                );
+                sig_tx.send(if record.v.yaw > 0.0 { Signal::LeftColumn } else { Signal::RightColumn }).unwrap();
+            }
+
         }
     });
 
