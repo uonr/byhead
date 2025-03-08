@@ -9,3 +9,9 @@ Control the niri by your head movement.
 3. Start tracking in opentrack
 
 If you have an iPhone, you can use the app "Freelook" to send the head movement to the opentrack.
+
+## Todo
+
+- [ ] GUI
+- [ ] Hotkey toggle enable/disable
+- [ ] Switch screen focus
