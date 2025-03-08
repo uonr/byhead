@@ -75,12 +75,12 @@ impl Pose {
             self.x, self.y, self.z, self.yaw, self.pitch, self.roll
         )
     }
-    fn v(&self, other: Pose, delta: f64) -> Pose {
-        (other - *self) / delta
+    fn diff(&self, other: Pose, delta: f64) -> Pose {
+        (*self - other) / delta
     }
 
     fn yaw_arrow(&self) -> char {
-        if self.yaw > 0.0 {
+        if self.yaw < 0.0 {
             '←'
         } else {
             '→'
@@ -88,7 +88,7 @@ impl Pose {
     }
 
     fn pitch_arrow(&self) -> char {
-        if self.pitch < 0.0 {
+        if self.pitch > 0.0 {
             '↑'
         } else {
             '↓'
@@ -105,9 +105,9 @@ struct PoseRecord {
 }
 
 impl PoseRecord {
-    fn v(&self, other: PoseRecord) -> Pose {
+    fn diff(&self, other: PoseRecord) -> Pose {
         let delta = self.instant.duration_since(other.instant).as_secs_f64();
-        self.pose.v(other.pose, delta)
+        self.pose.diff(other.pose, delta)
     }
 }
 
@@ -197,7 +197,6 @@ fn run(port: u16) -> std::io::Result<()> {
 
     std::thread::spawn(move || {
         let mut history = std::collections::VecDeque::<PoseRecord>::with_capacity(4096);
-        let mut last_signal = Signal::Nop;
         loop {
             history.truncate(4000);
             let now = std::time::Instant::now();
@@ -224,7 +223,7 @@ fn run(port: u16) -> std::io::Result<()> {
             let delta = now.duration_since(prev.instant).as_secs_f64();
 
             let record = if let Some(prev_2) = history.get(2) {
-                let v = pose.v(
+                let v = pose.diff(
                     prev_2.pose,
                     now.duration_since(prev_2.instant).as_secs_f64(),
                 );
@@ -235,7 +234,7 @@ fn run(port: u16) -> std::io::Result<()> {
                     delta,
                 }
             } else {
-                let v = pose.v(prev.pose, delta);
+                let v = pose.diff(prev.pose, delta);
                 PoseRecord {
                     pose,
                     v,
@@ -256,6 +255,8 @@ fn run(port: u16) -> std::io::Result<()> {
             let yaw_threshold = 36.0;
             let pitch_threshold = 40.0;
             let idle_time = 500;
+            let accel_threshold = 1000.0;
+            let log_all = true;
 
             let from_idle = history
                 .iter()
@@ -263,28 +264,59 @@ fn run(port: u16) -> std::io::Result<()> {
                 .take_while(|x| now.duration_since(x.instant).as_millis() < idle_time)
                 .all(|x| {
                     let v_yaw = x.v.yaw;
-                    v_yaw.abs() < yaw_threshold || v_yaw.signum() == record.v.yaw.signum()
+                    let v_pitch = x.v.pitch;
+                    let same_direction = x.v.yaw.signum() == record.v.yaw.signum()
+                        && v_pitch.signum() == record.v.pitch.signum();
+                    (v_yaw.abs() < yaw_threshold && v_pitch.abs() < pitch_threshold)
+                        || same_direction
                 });
 
-
-            if (record.v.pitch > 50.0 || record.v.pitch < -32.0) && from_idle  {
+            let acc = history[0].v.diff(history[1].v, delta);
+            if log_all && (elapsed.fract() * 100.0).floor() as i32 % 10 == 0 {
+                let arrow = record.pose.pitch_arrow();
+                let pitch = record.pose.pitch;
+                let v_pitch = record.v.pitch;
+                let acc_pitch = acc.pitch;
                 println!(
-                    "[{:10.3}] {} {}",
-                    elapsed,
-                    record.v.pitch_arrow(),
-                    record.v.pitch,
+                    "[{elapsed:10.3}] {arrow} pitch={pitch:8.4} v_pitch={v_pitch:8.4} acc_patch={acc_pitch:12.4}",
                 );
-                sig_tx.send(if record.v.pitch > 0.0 { Signal::Down } else { Signal::Up }).unwrap();
-            } else if record.v.yaw.abs() >= yaw_threshold && from_idle {
-                println!(
-                    "[{:10.3}] {} {}",
-                    elapsed,
-                    record.v.yaw_arrow(),
-                    record.v.yaw,
-                );
-                sig_tx.send(if record.v.yaw > 0.0 { Signal::LeftColumn } else { Signal::RightColumn }).unwrap();
             }
-
+            if record.v.yaw.abs() >= yaw_threshold
+                && acc.yaw.abs() > accel_threshold
+                && record.v.yaw.abs() > record.v.pitch.abs()
+            {
+                if !from_idle {
+                    println!("[YAW] NOT IDLE");
+                } else {
+                    let acc_yaw = acc.yaw;
+                    let v_yaw = record.v.yaw;
+                    let arrow = record.v.yaw_arrow().to_string().repeat(8);
+                    println!("{arrow} {v_yaw:12.4} acc_yaw={acc_yaw:12.4}",);
+                    sig_tx
+                        .send(if record.v.yaw < 0.0 {
+                            Signal::LeftColumn
+                        } else {
+                            Signal::RightColumn
+                        })
+                        .unwrap();
+                }
+            } else if record.v.pitch.abs() > pitch_threshold && acc.pitch.abs() > accel_threshold {
+                if !from_idle {
+                    println!("[PITCH] NOT IDLE");
+                } else {
+                    println!(
+                        "{} {from_idle}",
+                        record.v.pitch_arrow().to_string().repeat(8),
+                    );
+                    sig_tx
+                        .send(if record.v.pitch < 0.0 {
+                            Signal::Down
+                        } else {
+                            Signal::Up
+                        })
+                        .unwrap();
+                }
+            }
         }
     });
 
